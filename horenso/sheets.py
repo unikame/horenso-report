@@ -31,21 +31,39 @@ class SheetError(Exception):
     """画面に出すための、わかりやすい読み込みエラー。"""
 
 
+def _parse_key_json(raw) -> dict:
+    """貼り付けた鍵の JSON を、よくある崩れ（"\"\"\"" で囲んだ・引用符が “ ” に変わった・全角スペース）を直して読む。"""
+    if not isinstance(raw, str):
+        return dict(raw)
+    s = raw.replace("﻿", "").replace("　", " ").replace(" ", " ")
+    s = s.translate(str.maketrans({"“": '"', "”": '"', "„": '"', "＂": '"', "｛": "{", "｝": "}", "：": ":", "，": ","}))
+    i, j = s.find("{"), s.rfind("}")
+    if i < 0:
+        raise SheetError(BAD_JSON + "（最初の { が見つかりません）")
+    if j < i:
+        raise SheetError(BAD_JSON + "（最後の } が見つかりません。途中で切れていないか確認してください）")
+    try:
+        # strict=False … "\"\"\"" で囲むと private_key の \n が本物の改行になるため、それも受け付ける
+        return json.loads(s[i:j + 1], strict=False)
+    except json.JSONDecodeError as e:
+        raise SheetError(BAD_JSON + f"（貼り付けた {e.lineno} 行目付近の書き方が崩れています）") from None
+
+
 def _secret_info():
     """Secrets からサービスアカウントの鍵を取り出す。なければ None。"""
     try:
         sec = st.secrets
         raw = sec.get("gcp_service_account_json") or sec.get("horenso", {}).get("gcp_service_account_json")
         if raw:                                                          # [horenso] の下に貼ってしまった場合も拾う
-            return json.loads(raw) if isinstance(raw, str) else dict(raw)
+            return _parse_key_json(raw)
         if "gcp_service_account" in sec:
             return dict(sec["gcp_service_account"])
         if "connections" in sec and "gsheets" in sec["connections"]:     # st-gsheets-connection の書き方
             return dict(sec["connections"]["gsheets"])
         if sec.get("type") == "service_account":                         # 見出しなしで項目だけ貼った場合
             return {k: sec[k] for k in sec.keys() if isinstance(sec[k], str)}
-    except json.JSONDecodeError as e:
-        raise SheetError(BAD_JSON) from e
+    except SheetError:
+        raise
     except Exception:                                                    # secrets.toml がない場合など
         return None
     return None

@@ -9,6 +9,7 @@
 """
 from __future__ import annotations
 
+import datetime as dt
 import json
 import os
 import re
@@ -21,6 +22,8 @@ import streamlit as st
 from . import config
 
 SCOPES = ["https://www.googleapis.com/auth/spreadsheets.readonly"]
+JST = dt.timezone(dt.timedelta(hours=9))
+LOADED: dict = {}          # (シートID, タブ) → 実際に Google から読み込んだ時刻
 
 NO_KEY = ("サービスアカウントの鍵が Secrets に登録されていません。"
           "Streamlit Cloud の「Manage app」→「Settings」→「Secrets」に、gcp_service_account_json として鍵の JSON を貼ってください（README の手順 B）。")
@@ -117,7 +120,9 @@ def load_values(sheet_id: str, tab: str) -> list[list[str]]:
         raise SheetError("Google の認証情報を読み込めませんでした。Secrets に貼った鍵を確認してください。（" + type(e).__name__ + "）") from e
     share = (email + " を閲覧者として共有してください。") if email else ""
     try:
-        return gc.open_by_key(sheet_id).worksheet(tab).get_values()
+        values = gc.open_by_key(sheet_id).worksheet(tab).get_values()
+        LOADED[(sheet_id, tab)] = dt.datetime.now(JST)
+        return values
     except gspread.exceptions.WorksheetNotFound as e:
         raise SheetError("スプレッドシートに「" + tab + "」タブが見つかりません。タブ名が変わっていないか確認してください。") from e
     except gspread.exceptions.SpreadsheetNotFound as e:
@@ -159,6 +164,12 @@ def load(kind: str) -> list[list[str]]:
     return load_values(sheet, config.TABS[kind])
 
 
+def loaded_at():
+    """いちばん古い読み込み時刻（表示中のデータがいつ時点か）。まだなければ None。"""
+    return min(LOADED.values()) if LOADED else None
+
+
 def reload_all():
     load_values.clear()
     _client.clear()
+    LOADED.clear()

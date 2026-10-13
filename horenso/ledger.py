@@ -11,6 +11,12 @@ SECTIONS = [("①報告", "報告"), ("②連絡", "連絡"), ("③相談", "相
 TODO_DONE = {"完了", "対応不要"}
 RISK_DONE = {"対応済み", "対応不要"}
 LEVEL_RANK = {"高": 0, "中": 1, "低": 2}
+JST = dt.timezone(dt.timedelta(hours=9))
+
+
+def today_jst() -> str:
+    """サーバーは UTC で動くことが多いので、日本時間の今日を使う。"""
+    return dt.datetime.now(JST).date().isoformat()
 
 
 def to_frame(values: list[list[str]]) -> pd.DataFrame:
@@ -77,7 +83,7 @@ def _due_date(s: str):
 
 
 def parse_todos(values, today: str | None = None) -> pd.DataFrame:
-    today = today or dt.date.today().isoformat()
+    today = today or today_jst()
     df = to_frame(values)
     cols = ["id", "date", "space", "who", "what", "due", "state", "memo", "days", "open", "overdue"]
     if df.empty or "内容" not in df:

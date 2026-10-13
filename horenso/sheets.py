@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 
 import google.auth.exceptions
 import gspread
@@ -121,15 +122,35 @@ def load_values(sheet_id: str, tab: str) -> list[list[str]]:
         raise SheetError("スプレッドシートに「" + tab + "」タブが見つかりません。タブ名が変わっていないか確認してください。") from e
     except gspread.exceptions.SpreadsheetNotFound as e:
         raise SheetError("スプレッドシートが見つからないか、共有されていません。" + share) from e
+    except PermissionError as e:                     # gspread は 403 をこの形で返す
+        raise SheetError(_forbidden_message(e, sheet_id, share)) from e
     except (google.auth.exceptions.RefreshError, google.auth.exceptions.TransportError, requests.exceptions.ConnectionError) as e:
         raise SheetError("Google にログインできませんでした。Secrets の鍵が正しいか（削除・無効化された鍵でないか）確認してください。（" + type(e).__name__ + "）") from e
     except gspread.exceptions.APIError as e:
         code = getattr(getattr(e, "response", None), "status_code", None)
         if code == 403:
-            raise SheetError("スプレッドシートを読む権限がないか、Google Sheets API が有効になっていません。" + share) from e
+            raise SheetError(_forbidden_message(e, sheet_id, share)) from e
         if code == 429:
             raise SheetError("Google の読み込み回数の上限に達しました。1分ほど待ってから再読み込みしてください。") from e
         raise SheetError("スプレッドシートを読み込めませんでした（" + str(code) + "）。") from e
+
+
+def _forbidden_message(e: Exception, sheet_id: str, share: str) -> str:
+    """403 の理由（API が無効／共有されていない）を見分けて案内を作る。"""
+    api = e if isinstance(e, gspread.exceptions.APIError) else e.__cause__
+    text = ""
+    try:
+        text = api.response.text if api is not None else ""
+    except Exception:
+        pass
+    if "SERVICE_DISABLED" in text or "has not been used" in text or "is disabled" in text:
+        m = re.search(r"project[s]?/?\s*(\d+)", text)
+        return ("Google Sheets API が有効になっていません。Google Cloud コンソールの「API とサービス」→「ライブラリ」で "
+                "Google Sheets API を開き、「有効にする」を押してください" + (f"（プロジェクト番号 {m.group(1)}）" if m else "") +
+                "。有効にしてから数分後に「最新を読み込む」を押してください。")
+    name = "管理台帳" if sheet_id == config.get("LEDGER_ID") else "アンケート回答管理表"
+    return (f"「{name}」を読む権限がありません。スプレッドシートの「共有」で、" + (share or "サービスアカウントのメールアドレスを閲覧者として共有してください。")
+            + " 共有後、「最新を読み込む」を押してください。")
 
 
 def load(kind: str) -> list[list[str]]:

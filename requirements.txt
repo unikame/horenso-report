@@ -1,0 +1,5 @@
+streamlit>=1.50,<2
+gspread>=6.1,<7
+google-auth>=2.30,<3
+pandas>=2.2
+altair>=5.4

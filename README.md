@@ -53,7 +53,13 @@ Dockerfile              Cloud Run 用
 
 1. 手順1のサービスアカウントで「鍵を追加」→ JSON をダウンロード（組織の設定で鍵の作成が禁止されている場合は A を使う）
 2. https://share.streamlit.io で「Create app」→ このリポジトリ、`app.py` を選ぶ
-3. 「Advanced settings」→「Secrets」に、`.streamlit/secrets.toml.example` の形で JSON の中身を貼る
+3. 「Advanced settings」→「Secrets」（公開後は「Manage app」→「Settings」→「Secrets」）に、次の形で貼って保存する。ダウンロードした JSON ファイルをメモ帳などで開き、`{` から `}` まで丸ごとコピーして `'''` と `'''` の間に貼る。保存するとアプリが自動で再起動する
+
+   ```toml
+   gcp_service_account_json = '''
+   { …鍵ファイルの中身をそのまま… }
+   '''
+   ```
 4. 公開後、「Share」→「Only specific people can view this app」にして、見る人のメールアドレスを招待する
 
 ## 3. 手元で動かす

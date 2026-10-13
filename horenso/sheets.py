@@ -1,32 +1,75 @@
 """Google スプレッドシートの読み込み（読み取り専用）。
 
-認証は次のどちらか。
-- secrets.toml の [gcp_service_account] にサービスアカウントの鍵（Streamlit Community Cloud など）
-- 実行環境の既定の認証情報（Cloud Run に割り当てたサービスアカウントなど。鍵ファイル不要）
-どちらの場合も、そのサービスアカウントのメールアドレスを、管理台帳とアンケートのスプレッドシートに「閲覧者」で共有しておく。
+認証は次の順に探す。
+1. Secrets の gcp_service_account_json … 鍵の JSON をそのまま貼ったもの（いちばん簡単）
+2. Secrets の [gcp_service_account] … 鍵の JSON を項目ごとに書いたもの
+3. 実行環境の既定の認証情報 … Cloud Run に割り当てたサービスアカウント、または手元の gcloud ログイン
+   （Streamlit Community Cloud にはこれがないので、1 か 2 が必須）
+どの場合も、そのサービスアカウントのメールアドレスを、管理台帳とアンケートのスプレッドシートに「閲覧者」で共有しておく。
 """
 from __future__ import annotations
 
+import json
+import os
+
+import google.auth.exceptions
 import gspread
+import requests
 import streamlit as st
 
 from . import config
 
 SCOPES = ["https://www.googleapis.com/auth/spreadsheets.readonly"]
 
+NO_KEY = ("サービスアカウントの鍵が Secrets に登録されていません。"
+          "Streamlit Cloud の「Manage app」→「Settings」→「Secrets」に、gcp_service_account_json として鍵の JSON を貼ってください（README の手順 B）。")
+BAD_JSON = ("Secrets の gcp_service_account_json が JSON として読めません。"
+            "鍵ファイルの中身を、最初の { から最後の } まで省略せずに、''' と ''' の間に貼ってください。")
+
 
 class SheetError(Exception):
     """画面に出すための、わかりやすい読み込みエラー。"""
 
 
+def _secret_info():
+    """Secrets からサービスアカウントの鍵を取り出す。なければ None。"""
+    try:
+        sec = st.secrets
+        raw = sec.get("gcp_service_account_json") or sec.get("horenso", {}).get("gcp_service_account_json")
+        if raw:                                                          # [horenso] の下に貼ってしまった場合も拾う
+            return json.loads(raw) if isinstance(raw, str) else dict(raw)
+        if "gcp_service_account" in sec:
+            return dict(sec["gcp_service_account"])
+        if "connections" in sec and "gsheets" in sec["connections"]:     # st-gsheets-connection の書き方
+            return dict(sec["connections"]["gsheets"])
+        if sec.get("type") == "service_account":                         # 見出しなしで項目だけ貼った場合
+            return {k: sec[k] for k in sec.keys() if isinstance(sec[k], str)}
+    except json.JSONDecodeError as e:
+        raise SheetError(BAD_JSON) from e
+    except Exception:                                                    # secrets.toml がない場合など
+        return None
+    return None
+
+
+def _has_default_credentials() -> bool:
+    adc = os.path.join(os.path.expanduser("~"), ".config", "gcloud", "application_default_credentials.json")
+    return bool(os.environ.get("K_SERVICE") or os.environ.get("GOOGLE_APPLICATION_CREDENTIALS") or os.path.exists(adc))
+
+
 @st.cache_resource(show_spinner=False)
 def _client():
-    if "gcp_service_account" in st.secrets:
+    info = _secret_info()
+    if info:
         from google.oauth2.service_account import Credentials
-        creds = Credentials.from_service_account_info(dict(st.secrets["gcp_service_account"]), scopes=SCOPES)
-    else:
+        missing = [k for k in ("client_email", "private_key", "token_uri") if not info.get(k)]
+        if missing:
+            raise SheetError("Secrets の鍵に " + "・".join(missing) + " がありません。鍵の JSON を省略せずに貼ってください。")
+        creds = Credentials.from_service_account_info(info, scopes=SCOPES)
+    elif _has_default_credentials():                                     # Cloud Run・手元の gcloud ログイン
         import google.auth
         creds, _ = google.auth.default(scopes=SCOPES)
+    else:
+        raise SheetError(NO_KEY)
     return gspread.authorize(creds), getattr(creds, "service_account_email", "")
 
 
@@ -49,18 +92,23 @@ def load_values(sheet_id: str, tab: str) -> list[list[str]]:
     """タブ全体を、画面に表示されている書式どおりの文字列で返す。"""
     try:
         gc, email = _client()
-    except Exception as e:  # 認証情報がない・壊れている
-        raise SheetError("Google の認証情報が見つかりません。README の「認証の準備」を確認してください。（" + type(e).__name__ + "）") from e
+    except SheetError:
+        raise
+    except Exception as e:  # 鍵が壊れている など
+        raise SheetError("Google の認証情報を読み込めませんでした。Secrets に貼った鍵を確認してください。（" + type(e).__name__ + "）") from e
+    share = (email + " を閲覧者として共有してください。") if email else ""
     try:
         return gc.open_by_key(sheet_id).worksheet(tab).get_values()
     except gspread.exceptions.WorksheetNotFound as e:
         raise SheetError("スプレッドシートに「" + tab + "」タブが見つかりません。タブ名が変わっていないか確認してください。") from e
     except gspread.exceptions.SpreadsheetNotFound as e:
-        raise SheetError("スプレッドシートが見つからないか、共有されていません。" + (email + " を閲覧者として共有してください。" if email else "")) from e
+        raise SheetError("スプレッドシートが見つからないか、共有されていません。" + share) from e
+    except (google.auth.exceptions.RefreshError, google.auth.exceptions.TransportError, requests.exceptions.ConnectionError) as e:
+        raise SheetError("Google にログインできませんでした。Secrets の鍵が正しいか（削除・無効化された鍵でないか）確認してください。（" + type(e).__name__ + "）") from e
     except gspread.exceptions.APIError as e:
         code = getattr(getattr(e, "response", None), "status_code", None)
         if code == 403:
-            raise SheetError("スプレッドシートを読む権限がありません。" + (email + " を閲覧者として共有してください。" if email else "")) from e
+            raise SheetError("スプレッドシートを読む権限がないか、Google Sheets API が有効になっていません。" + share) from e
         if code == 429:
             raise SheetError("Google の読み込み回数の上限に達しました。1分ほど待ってから再読み込みしてください。") from e
         raise SheetError("スプレッドシートを読み込めませんでした（" + str(code) + "）。") from e
@@ -74,3 +122,4 @@ def load(kind: str) -> list[list[str]]:
 
 def reload_all():
     load_values.clear()
+    _client.clear()

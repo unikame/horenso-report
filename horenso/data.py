@@ -6,12 +6,20 @@ import streamlit as st
 from . import ledger, sheets, survey
 
 
+def reset_errors():
+    """画面を描くたびに呼ぶ。同じエラーを何度も出さないための記録（閲覧者ごと）を消す。"""
+    st.session_state["_shown_errors"] = set()
+
+
 def _values(kind: str, quiet: bool = False):
     try:
         return sheets.load(kind)
     except sheets.SheetError as e:
-        if not quiet:
-            st.error(f"{_LABEL[kind]}：{e}", icon=":material/error:")
+        msg = str(e)
+        shown = st.session_state.setdefault("_shown_errors", set())
+        if not quiet and msg not in shown:           # 同じ原因のエラーは1回だけ表示する
+            shown.add(msg)
+            st.error(msg, icon=":material/error:")
         return None
 
 

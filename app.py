@@ -4,7 +4,7 @@
 """
 import streamlit as st
 
-from horenso import config, sheets
+from horenso import config, data, sheets
 
 st.set_page_config(page_title="報連相AI 管理画面", page_icon=":material/dashboard:", layout="wide")
 
@@ -31,4 +31,5 @@ with st.sidebar:
     if email:
         st.caption(f"読み込みに使うアカウント：{email}")
 
+data.reset_errors()
 pg.run()
